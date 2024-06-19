@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin" />
+    <meta http-equiv="Cross-Origin-Embedder-Policy" content="require-corp" />
+    <title>Raspberry Pi Car</title>
+    <style>
+      body {
+        margin-top: 40px;
+        font-size: 15px;
+      }
+      article {
+        display: flex;
+        margin: 10px;
+        gap: 10px;
+      }
+      canvas {
+        width: 640px;
+        height: 480px;
+        margin: 0;
+      }
+      button {
+        cursor: pointer;
+        color: white;
+        background-color: #5c5c5c;
+        border: none;
+        border-radius: 10px;
+        padding: 10px;
+        transition: all 0.3s;
+      }
+      button:hover {
+        color: black;
+        background-color: #d3d3d3;
+      }
+      input {
+        padding: 5px;
+      }
+      .center_row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+      }
+      .center_col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+      }
+      .setVideo_back {
+        padding: 30px;
+        border-radius: 20px;
+        background-color: #dbdbdb;
+      }
+    </style>
+  </head>
+
+  <body>
+    <article class="center_row">
+      <section>
+        <canvas id="canvasElement" width="640" height="480"></canvas>
+        <div>
+          <button onClick="onOpenWebsocket()">Open Websocket</button>
+          <button onClick="onCloseWebsocket()">Close Websocket</button>
+        </div>
+      </section>
+
+      <section class="setVideo_back center_col">
+        <h4 style="margin-top: 0">Set MIME</h4>
+        <label>Codec</label>
+        <input id="codecInput" value="h264" disabled />
+        <label>width</label>
+        <input id="widthInput" value="640" />
+        <label>height</label>
+        <input id="heightInput" value="480" />
+        <label>framerate</label>
+        <input id="framerateInput" value="30" />
+        <label>bitrate</label>
+        <input id="bitrateInput" value="4000000" />
+        <button onClick="onSetMime()">Set mime</button>
+        <h4>Canvas Rotate</h4>
+        <button onClick="onRotateCanvas()">Rotate Canvas ( 90° )</button>
+      </section>
+    </article>
+
+    <script src="./videoDecoder.js"></script>
+    <script type="text/javascript">
+      const canvasElement = document.getElementById("canvasElement");
+      const codecInput = document.getElementById("codecInput");
+      const widthInput = document.getElementById("widthInput");
+      const heightInput = document.getElementById("heightInput");
+      const framerateInput = document.getElementById("framerateInput");
+      const bitrateInput = document.getElementById("bitrateInput");
+
+      // Creating a websocket URL using the moth API
+      const setURL = () => {
+        if (window.location.protocol == "https:") {
+          // return `wss://moth.r2-spider.com:8277/pang/ws/sub?channel=instant&name=open&track=video&mode=single`;
+          return `ws://192.168.0.47:8286/pang/ws/sub?channel=instant&name=mothcar&track=video_01&mode=bundle`;
+        } else {
+          // return "wss://moth.r2-spider.com:8277/pang/ws/sub?channel=instant&name=open&track=video&mode=bundle";
+          // return "ws://192.168.0.47:8286/pang/ws/sub?channel=instant&name=raspberrypicar&track=video_01&mode=bundle";
+          return "ws://cobot.center:8286/pang/ws/sub?channel=instant&name=rpicar&track=video_02&mode=bundle";
+        }
+      };
+      var isFORWARD = false;
+      var isBACKWARD = false;
+      var isLEFT = false;
+      var isRIGHT = false;
+
+      let ws;
+      let firstOnMessage = false;
+      let codecConfig = {
+        codec: "avc1.42E01F",
+        width: 1280,
+        height: 720,
+        bitrate: 5000000,
+        framerate: 20,
+      };
+
+      const onSetMime = () => {
+        codecConfig.codec = codecInput.value;
+        codecConfig.width = widthInput.value;
+        codecConfig.height = heightInput.value;
+        codecConfig.framerate = framerateInput.value;
+        codecConfig.bitrate = bitrateInput.value;
+
+        if (ws) {
+          ws.send(createMimeStringFromMimeObject(codecConfig));
+        }
+      };
+
+      const onOpenWebsocket = () => {
+        if (ws) {
+          return false;
+        }
+
+        ws = new WebSocket(setURL());
+        ws.binaryType = "arraybuffer";
+
+        ws.onopen = function () {
+          console.log("ws open");
+          sendControlCommand();
+
+          setInterval(() => {
+            ws.send("ping");
+          }, 10000);
+        };
+
+        ws.onmessage = function (evt) {
+          if (!firstOnMessage) {
+            configVideoDecoder(codecConfig, canvasElement);
+            firstOnMessage = true;
+            return;
+          }
+
+          if (typeof evt.data == "object") {
+            decodeVideoFrame(evt);
+          } else if (typeof evt.data == "string") {
+            codecConfig = createCodecConfigFromMimeObject(evt.data);
+          } else {
+            console.log("RESPONSE: " + evt.data);
+          }
+        };
+
+        ws.onclose = function () {
+          console.log("ws close");
+          ws = null;
+        };
+
+        ws.onerror = function (evt) {
+          console.log("ws err");
+          console.log("ERROR: ", evt.data);
+        };
+      };
+
+      const onCloseWebsocket = () => {
+        if (!ws) {
+          return false;
+        }
+
+        stopVideoDecode();
+        ws.close();
+        ws = null;
+        return false;
+      };
+
+      let currentCommand;
+      const commandStopMap = {
+        w: { direction: "FORWARD_STOP" },
+        q: { direction: "LEFT_STOP" },
+        e: { direction: "RIGHT_STOP" },
+        s: { direction: "BACKWARD_STOP" },
+        a: { direction: "CC_STOP" },
+        d: { direction: "CW_STOP" },
+        W: { direction: "FORWARD_STOP" },
+        S: { direction: "BACKWARD_STOP" },
+        A: { direction: "CC_STOP" },
+        D: { direction: "CW_STOP" },
+        ㅈ: { direction: "FORWARD_STOP" },
+        ㄴ: { direction: "BACKWARD_STOP" },
+        ㅁ: { direction: "CC_STOP" },
+        ㅇ: { direction: "CW_STOP" },
+        ㅂ: { direction: "LEFT_STOP" },
+        ㄷ: { direction: "RIGHT_STOP" },
+        ArrowUp: { servo: "FORWARD_STOP" },
+        ArrowDown: { servo: "BACKWARD_STOP" },
+        ArrowLeft: { servo: "CC_STOP" },
+        ArrowRight: { servo: "CW_STOP" },
+      };
+      const commandMap = {
+        w: { direction: "FORWARD" },
+        q: { direction: "LEFT" },
+        e: { direction: "RIGHT" },
+        s: { direction: "BACKWARD" },
+        a: { direction: "CC" },
+        d: { direction: "CW" },
+        W: { direction: "FORWARD" },
+        S: { direction: "BACKWARD" },
+        A: { direction: "CC" },
+        D: { direction: "CW" },
+        ㅈ: { direction: "FORWARD" },
+        ㄴ: { direction: "BACKWARD" },
+        ㅁ: { direction: "CC" },
+        ㅇ: { direction: "CW" },
+        ㅂ: { direction: "LEFT" },
+        ㄷ: { direction: "RIGHT" },
+        ArrowUp: { servo: "FORWARD" },
+        ArrowDown: { servo: "BACKWARD" },
+        ArrowLeft: { servo: "CC" },
+        ArrowRight: { servo: "CW" },
+      };
+
+      const sendControlCommand = () => {
+        if (!ws) {
+          alert("Please press the apply button");
+          return;
+        }
+
+        window.addEventListener("keydown", (e) => {
+          keyPressHandler(e);
+        });
+        window.addEventListener("keyup", (e) => {
+          keyUpHandler(e);
+        });
+      };
+      const keyUpHandler = (e) => {
+        if (ws) {
+          if (currentCommand != JSON.stringify(commandStopMap[e.key])) {
+            currentCommand = JSON.stringify(commandStopMap[e.key]);
+            ws.send(currentCommand);
+            console.log(currentCommand);
+          }
+        }
+      };
+
+      const keyPressHandler = (e) => {
+        if (ws) {
+          if (currentCommand != JSON.stringify(commandMap[e.key])) {
+            currentCommand = JSON.stringify(commandMap[e.key]);
+            ws.send(currentCommand);
+            console.log(currentCommand);
+          }
+        }
+      };
+
+      let degree = 0;
+
+      const onRotateCanvas = () => {
+        degree += 90;
+        canvasElement.style.transform = "rotate(" + degree + "deg)";
+      };
+
+      const createMimeStringFromMimeObject = (mimeObject) => {
+        let mimeString = "video/" + mimeObject.codec + ";";
+
+        if (mimeObject.width) {
+          mimeString += "width=" + mimeObject.width + ";";
+        }
+        if (mimeObject.height) {
+          mimeString += "height=" + mimeObject.height + ";";
+        }
+        if (mimeObject.framerate) {
+          mimeString += "framerate=" + mimeObject.framerate + ";";
+        }
+        if (mimeObject.interval) {
+          mimeString += "interval=" + mimeObject.interval + ";";
+        }
+        if (mimeObject.bitrate) {
+          mimeString += "bitrate=" + mimeObject.bitrate + ";";
+        }
+
+        // mimeString += "packet=codec";
+
+        return mimeString;
+      };
+
+      const createCodecConfigFromMimeObject = (mimeObject) => {
+        const codec_config = {};
+
+        if (mimeObject.codec == "video/vp9") {
+          codec_config.codec = "vp09.00.31.08";
+        } else if (mimeObject.codec == "video/h264") {
+          codec_config.codec = "avc1.42E01F";
+        } else if (mimeObject.codec == "video/vp8") {
+          codec_config.codec = "vp8";
+        } else if (mimeObject.codec == "video/av1") {
+          codec_config.codec = "av01.0.05M.10";
+        }
+
+        if (mimeObject.width) {
+          codec_config.width = mimeObject.width;
+        }
+        if (mimeObject.height) {
+          codec_config.height = mimeObject.height;
+        }
+        if (mimeObject.interval) {
+          codec_config.interval = mimeObject.interval;
+        }
+        if (mimeObject.bitrate) {
+          codec_config.bitrate = mimeObject.bitrate;
+        }
+        if (mimeObject.framerate) {
+          codec_config.framerate = mimeObject.framerate;
+        }
+        return codec_config;
+      };
+    </script>
+  </body>
+</html>

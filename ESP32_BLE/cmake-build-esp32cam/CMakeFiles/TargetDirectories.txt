@@ -1,0 +1,5 @@
+/Users/juchan/coplay-gateway/client/cmake-build-esp32cam/CMakeFiles/Production.dir
+/Users/juchan/coplay-gateway/client/cmake-build-esp32cam/CMakeFiles/Debug.dir
+/Users/juchan/coplay-gateway/client/cmake-build-esp32cam/CMakeFiles/Z_DUMMY_TARGET.dir
+/Users/juchan/coplay-gateway/client/cmake-build-esp32cam/CMakeFiles/edit_cache.dir
+/Users/juchan/coplay-gateway/client/cmake-build-esp32cam/CMakeFiles/rebuild_cache.dir
